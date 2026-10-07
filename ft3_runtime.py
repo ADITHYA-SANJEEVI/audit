@@ -12,13 +12,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 from jiwer import wer
-from gtts import gTTS
 from transformers import (
     Wav2Vec2Processor,
     Wav2Vec2ForCTC,
     AutoModelForSpeechSeq2Seq,
     AutoProcessor,
     pipeline,
+    VitsModel,
+    AutoTokenizer,
 )
 
 OUT = Path("ft3_output")
@@ -117,7 +118,7 @@ print("Downloaded Project Boli source:", RAW_AUDIO, RAW_AUDIO.stat().st_size, "b
 
 # 2) Convert and crop to a 20-second, mono, 16 kHz PCM WAV.
 sh(["ffmpeg","-hide_banner","-loglevel","error","-y",
-    "-i",str(RAW_AUDIO),"-ss","0","-t","20",
+    "-i",str(RAW_AUDIO),"-ss","0","-t","19.5",
     "-ac","1","-ar","16000","-c:a","pcm_s16le",str(AUDIO_PATH)])
 
 probe = subprocess.check_output(
@@ -281,16 +282,26 @@ plt.ylabel("WER (%)"); plt.title("ASR WER comparison")
 plt.legend(); plt.grid(axis="y",alpha=.2)
 save_plot(FIG/"wer_comparison.png")
 
-# 7) REAL TTS from the best real ASR transcript.
-tts_mp3=OUT/"tts_temp.mp3"
-print("TTS input:",best_text)
-gTTS(best_text, lang="en", slow=False).save(str(tts_mp3))
-sh(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(tts_mp3),
-    "-ac","1","-ar","16000","-c:a","pcm_s16le",str(TTS_PATH)])
-tts_y, tts_sr=librosa.load(TTS_PATH,sr=16000,mono=True)
-tts_y=librosa.util.normalize(tts_y)
+# 7) REAL local TTS from the best real ASR transcript.
+TTS_ID="facebook/mms-tts-eng"
+print("Loading",TTS_ID)
+tts_tokenizer=AutoTokenizer.from_pretrained(TTS_ID)
+tts_model=VitsModel.from_pretrained(TTS_ID)
+tts_model.eval()
+tts_inputs=tts_tokenizer(best_text,return_tensors="pt")
+t0=time.perf_counter()
+with torch.inference_mode():
+    tts_waveform=tts_model(**tts_inputs).waveform[0].cpu().numpy()
+tts_seconds=time.perf_counter()-t0
+native_tts_sr=int(tts_model.config.sampling_rate)
+if native_tts_sr != 16000:
+    tts_waveform=librosa.resample(tts_waveform,orig_sr=native_tts_sr,target_sr=16000)
+tts_y=librosa.util.normalize(tts_waveform.astype(np.float32))
+tts_sr=16000
 sf.write(TTS_PATH,tts_y,tts_sr,subtype="PCM_16")
 tts_duration=len(tts_y)/tts_sr
+print("TTS input:",best_text)
+print("TTS seconds:",tts_seconds,"duration:",tts_duration)
 
 # 8) REAL round-trip ASR. Use the same best system chosen by clean-reference WER.
 if best_name=="whisper":
@@ -369,7 +380,7 @@ results={
     "raw_audio_sha256":sha256(RAW_AUDIO),
     "prepared_audio_sha256":sha256(AUDIO_PATH),
     "segment_start_s":0.0,
-    "segment_end_s":20.0,
+    "segment_end_s":19.5,
     "sample_rate_hz":sr,
     "channels":1,
     "duration_s":duration,
@@ -388,7 +399,7 @@ results={
     "wer_clean":metrics["whisper"]["clean"]["wer"],
   },
   "best_asr":best_name,
-  "tts":{"engine":"gTTS","input_text":best_text,"duration_s":tts_duration,"wav_sha256":sha256(TTS_PATH)},
+  "tts":{"engine":"facebook/mms-tts-eng (VITS)","model_id":TTS_ID,"input_text":best_text,"inference_s":tts_seconds,"duration_s":tts_duration,"wav_sha256":sha256(TTS_PATH)},
   "roundtrip":{"model":best_name,"transcript":roundtrip_text,"wer":roundtrip_wer,"inference_s":rt_seconds},
   "versions":versions,
 }
@@ -398,7 +409,7 @@ results={
 (OUT/"provenance.txt").write_text(
     f"Dataset: Project Boli\nRepository: projectboli/Project_Boli_Dataset\nCommit: {SOURCE_COMMIT}\n"
     f"Audio: {SOURCE_AUDIO_PATH}\nAnnotations: {SOURCE_TRANSCRIPT_PATH}\n"
-    f"Segment: 0.000-20.000 s\nPrepared WAV SHA256: {sha256(AUDIO_PATH)}\n",
+    f"Segment: 0.000-19.500 s\nPrepared WAV SHA256: {sha256(AUDIO_PATH)}\n",
     encoding="utf-8"
 )
 print(json.dumps(results,indent=2))
