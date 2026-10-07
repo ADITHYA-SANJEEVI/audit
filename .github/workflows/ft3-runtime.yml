@@ -1,0 +1,45 @@
+name: FT3 Runtime Verification
+
+on:
+  push:
+    branches:
+      - ft3-runtime-20261008
+  workflow_dispatch:
+
+jobs:
+  run-ft3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch>=2.2" "transformers>=4.45" accelerate safetensors librosa soundfile jiwer gTTS pandas matplotlib sentencepiece requests
+
+      - name: Run reproducible FT3 experiment
+        run: |
+          python ft3_runtime.py | tee ft3_runtime.log
+
+      - name: Package outputs
+        run: |
+          cp ft3_runtime.log ft3_output/
+          cd ft3_output
+          zip -r ../ft3_output.zip .
+
+      - name: Upload verified outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ft3-verified-output
+          path: ft3_output.zip
+          if-no-files-found: error
